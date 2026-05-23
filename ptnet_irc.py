@@ -346,6 +346,27 @@ class PTnetIRC:
                                 retry = {"target": channel, "message": message, "type": "notice_all", "exclude": list(exclude)}
                                 with open(OUTGOING_FILE, "a") as rf:
                                     rf.write(json.dumps(retry) + "\n")
+                        elif msg_type == "privmsg_all":
+                            # Send PRIVMSG to all channel members from cache
+                            channel = target
+                            exclude = set(data.get("exclude", []))
+                            exclude.add(IRC_NICK)
+                            members = self.channel_members.get(channel, set()).copy()
+
+                            if members:
+                                sent = 0
+                                for nick in members:
+                                    if nick not in exclude:
+                                        self.send_msg(nick, message)
+                                        sent += 1
+                                log(f"PRIVMSG ALL -> {channel}: {sent} nicks ({message[:30]}...)")
+                            else:
+                                # Cache empty: request NAMES and retry next tick
+                                log(f"PRIVMSG ALL -> {channel}: cache empty, requesting NAMES")
+                                self.request_names(channel)
+                                retry = {"target": channel, "message": message, "type": "privmsg_all", "exclude": list(exclude)}
+                                with open(OUTGOING_FILE, "a") as rf:
+                                    rf.write(json.dumps(retry) + "\n")
                         else:
                             self.send_msg(target, message)
                             log(f"-> {target}: {message[:50]}...")
