@@ -14,7 +14,7 @@ import importlib.util
 from subscription_manager import check_vip, generate_code, activate_code, revoke_vip, list_codes, list_active_users
 
 # === CONFIG ===
-BOT_TOKEN = "8306294739:***"
+BOT_TOKEN = "8306294739:AAFyPp6Z3xspgrKG7lWx-mI4Hutx23o6DeI"
 OWNER_ID = 889219283  # RɆβɆŁŞØŁ ☠️ chat_id
 ALLOWED_CHAT_IDS = set()  # vazio = aceita todos os grupos
 # Para restringir a grupos específicos:
