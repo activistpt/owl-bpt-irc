@@ -1409,21 +1409,33 @@ NOTICE_QUOTES = [
 ]
 
 
-def cmd_notice(sender, channel, target_nick=None):
-    """Send a random quote via private message (PRIVMSG) to target nick.
-    Also announces in the main channel (#deep-web) that notice was sent."""
-    quote = random.choice(NOTICE_QUOTES)
+def cmd_notice(sender, channel, target_nick=None, custom_msg=None):
+    """Send a notice.
+    - !notice              → random quote via NOTICE to channel + PRIVMSG to all members
+    - !notice #canal       → random quote via NOTICE to #canal + PRIVMSG to all members
+    - !notice nick         → random quote via PRIVMSG to nick
+    - !notice nick msg     → custom message via NOTICE to nick
+    - !notice #canal msg   → custom message via NOTICE to #canal
+    """
+    quote = custom_msg if custom_msg else random.choice(NOTICE_QUOTES)
     responses = []
     
-    if target_nick:
-        # Send private message to the target nick
-        responses.append({"target": target_nick, "message": quote, "type": "privmsg"})
+    if target_nick and target_nick.startswith("#"):
+        # Target is a channel: send NOTICE to channel + PRIVMSG to all members
+        if custom_msg:
+            responses.append({"target": target_nick, "message": quote, "type": "notice"})
+            responses.append({"target": target_nick, "message": quote, "type": "privmsg_all", "exclude": list(IGNORE_NICKS | {sender, "OWL"})})
+        else:
+            responses.append({"target": target_nick, "message": quote, "type": "notice"})
+            responses.append({"target": target_nick, "message": quote, "type": "privmsg_all", "exclude": list(IGNORE_NICKS | {sender, "OWL"})})
+    elif target_nick:
+        # Target is a nick: send NOTICE (not PRIVMSG) to the nick
+        responses.append({"target": target_nick, "message": quote, "type": "notice"})
         # Announce in main channel
         responses.append({"target": "#deep-web", "message": "🦉 Notice enviado para %s por %s" % (target_nick, sender), "type": "privmsg"})
     else:
-        # Send NOTICE to the channel itself (visible to all)
+        # No target: send NOTICE to current channel + PRIVMSG to all members
         responses.append({"target": channel, "message": quote, "type": "notice"})
-        # Also send PRIVMSG to each channel member individually
         responses.append({"target": channel, "message": quote, "type": "privmsg_all", "exclude": list(IGNORE_NICKS | {sender, "OWL"})})
     
     return responses
@@ -2048,27 +2060,38 @@ def generate_response(msg):
     if CMD_HUBSTREAM.match(message):
         return cmd_hubstream()
 
-    # !notice [#canal] [nickname]
+    # !notice [#canal] [nickname] [mensagem]
     notice_match = CMD_NOTICE.match(message)
     if notice_match:
         arg1 = notice_match.group(1)
         arg2 = notice_match.group(2)
         if arg1 and arg1.startswith("#"):
-            # Format: !notice #channel [nick]
+            # Format: !notice #channel [nick|msg]
             channel = arg1
-            nick = arg2.strip() if arg2 else None
-            if nick:
-                log(f"[NOTICE] -> {nick} in {channel}")
-                return cmd_notice(sender, channel, target_nick=nick)
+            # arg2 can be a nick or a custom message
+            if arg2:
+                # Check if arg2 looks like a nick (single word, no spaces) → treat as nick + possible msg
+                parts = arg2.split(None, 1)
+                nick = parts[0]
+                msg = parts[1] if len(parts) > 1 else None
+                if nick and not nick.startswith("#"):
+                    log(f"[NOTICE] -> {nick} in {channel}" + (f" msg: {msg}" if msg else ""))
+                    return cmd_notice(sender, channel, target_nick=nick, custom_msg=msg)
+                else:
+                    # arg2 is a message for the channel
+                    log(f"[NOTICE] -> {channel} msg: {arg2}")
+                    return cmd_notice(sender, channel, target_nick=channel, custom_msg=arg2)
             else:
                 log(f"[NOTICE ALL] -> all members of {channel}")
                 return cmd_notice(sender, channel)
         elif arg1:
-            # Format: !notice nick (no channel, send directly)
-            nick = arg1
-            channel = msg.get("target", "#deep-web")
-            log(f"[NOTICE] direct -> {nick}")
-            return cmd_notice(sender, channel, target_nick=nick)
+            # Format: !notice nick [message]
+            parts = message.split(None, 2)
+            nick = parts[1] if len(parts) > 1 else None
+            custom = parts[2] if len(parts) > 2 else None
+            channel = "#deep-web"
+            log(f"[NOTICE] direct -> {nick}" + (f" msg: {custom}" if custom else ""))
+            return cmd_notice(sender, channel, target_nick=nick, custom_msg=custom)
 
     # !ajuda
     if CMD_AJUDA.match(message):
