@@ -11,13 +11,17 @@ import json
 import re
 import logging
 import importlib.util
+from subscription_manager import check_vip, generate_code, activate_code, revoke_vip, list_codes, list_active_users
 
 # === CONFIG ===
-BOT_TOKEN = "8306294739:AAFyPp6Z3xspgrKG7lWx-mI4Hutx23o6DeI"
+BOT_TOKEN = "8306294739:***"
 OWNER_ID = 889219283  # RɆβɆŁŞØŁ ☠️ chat_id
 ALLOWED_CHAT_IDS = set()  # vazio = aceita todos os grupos
 # Para restringir a grupos específicos:
 # ALLOWED_CHAT_IDS = {-1003545367062}  # DEEP WEB group
+
+# === COMANDOS QUE NÃO PRECISAM DE VIP ===
+FREE_COMMANDS = {"start", "help", "ping", "gerar", "ativar"}
 
 # === LOGGING ===
 logging.basicConfig(
@@ -66,7 +70,7 @@ from telegram.ext import (
     ContextTypes,
 )
 
-# --- Restrict decorator ---
+# --- Restrict decorator --
 def allowed_chat(func):
     """Decorator to optionally restrict bot to specific group chats."""
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -77,13 +81,46 @@ def allowed_chat(func):
         return await func(update, context)
     return wrapper
 
+
+def vip_required(func):
+    """Decorator que verifica se o utilizador tem VIP ativo."""
+    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        # Owner always has access
+        user_id = update.effective_user.id
+        if user_id == OWNER_ID:
+            return await func(update, context)
+
+        # Check if command is free
+        command = update.message.text.split()[0].lstrip("/").lower()
+        if command in FREE_COMMANDS:
+            return await func(update, context)
+
+        # Check VIP status
+        status = check_vip(user_id)
+        if not status.get("active"):
+            await update.message.reply_text(
+                "🔒 **Comando VIP**\n\n"
+                "Este comando requer uma assinatura VIP ativa.\n"
+                "Usa `/ativar <codigo>` para ativar.\n"
+                "Não tens um código? Pede a um admin.",
+                parse_mode="Markdown",
+            )
+            return
+        return await func(update, context)
+    return wrapper
+
 # === COMMAND HANDLERS ===
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Start / help command."""
     text = (
         "🦉 **OWL Bot** - Comandos disponíveis:\n\n"
-        "📋 **Informação:**\n"
+        "📋 **Geral (Grátis):**\n"
+        " `/start` - Iniciar bot\n"
+        " `/status` - Ver estado VIP\n"
+        " `/ativar <codigo>` - Ativar código VIP\n"
+        " `/ping` - Testar bot\n\n"
+        "💰 **VIP:**\n"
         " `/help` - Mostrar ajuda\n"
         " `/wiki <termo>` - Pesquisar Wikipedia\n"
         " `/img <descrição>` - Gerar imagem\n"
@@ -91,27 +128,30 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         " `/youtube <termo>` - Pesquisar YouTube\n"
         " `/google <termo>` - Pesquisar Google\n"
         " `/news <região>` - Notícias\n"
-        "\n💰 **Financeiro:**\n"
         " `/crypto <moeda>` - Preço crypto\n"
-        " `/stock <símbolo>` - Cotação ação\n"
-        "\n🎬 **Cinema:**\n"
+        " `/stock <símbolo>` - Cotação ação\n\n"
+        "🎬 **Cinema:**\n"
         " `/cinema` - Filmes em cartaz (25)\n"
         " `/estreias` - Estreias da semana\n"
         " `/imdb <filme>` - Info IMDB\n"
-        " `/play <url-imdb>` - Gerar link PlayIMDB\n"
-        "\n🔧 **OSINT:**\n"
+        " `/play <url-imdb>` - Gerar link PlayIMDB\n\n"
+        "🔧 **OSINT:**\n"
         " `/ipinfo <ip/domínio>` - Info IP\n"
         " `/ipscan <ip>` - Scan de portas\n"
-        " `/iplookup <ip>` - Reverse DNS\n"
-        "/whois <domínio> - WHOIS\n"
-        "\n🌐 **Pirataria:**\n"
+        " `/iplookup <ip>` - Reverse DNS\n\n"
+        "🌐 **Pirataria:**\n"
         " `/iptv` - Canais IPTV\n"
         " `/piratebay <termo>` - Pesquisar TPB\n"
-        " `/predb <termo>` - Pré-db\n"
-        "\n💬 **Social:**\n"
+        " `/predb <termo>` - Pré-db\n\n"
+        "💬 **Social:**\n"
         " `/quote` - Citação aleatória\n"
         " `/curiosidade` - Curiosidade\n"
-        " `/notice [nick] [msg]` - Enviar notice"
+        " `/notice [nick] [msg]` - Enviar notice\n\n"
+        "🔑 **Admin:**\n"
+        " `/gerar [VIP|premium] [dias]` - Gerar código\n"
+        " `/revoke <user_id>` - Revogar VIP\n"
+        " `/vips` - Listar VIPs ativos\n"
+        " `/codes` - Listar códigos\n"
     )
     await update.message.reply_text(text, parse_mode="Markdown")
 
@@ -153,6 +193,7 @@ async def run_irc_command(update: Update, context: ContextTypes.DEFAULT_TYPE,
         log.error(f"Command error: {e}")
         await update.message.reply_text(f"❌ Erro: {str(e)[:200]}")
 
+@vip_required
 async def cmd_wiki(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = " ".join(context.args) if context.args else ""
     if not query:
@@ -160,6 +201,8 @@ async def cmd_wiki(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     await run_irc_command(update, context, irc.cmd_wiki, query)
 
+
+@vip_required
 async def cmd_img(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = " ".join(context.args) if context.args else ""
     if not query:
@@ -168,6 +211,8 @@ async def cmd_img(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🎨 A gerar imagem...")
     await run_irc_command(update, context, irc.cmd_img, query)
 
+
+@vip_required
 async def cmd_meteo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = " ".join(context.args) if context.args else ""
     if not query:
@@ -175,6 +220,8 @@ async def cmd_meteo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     await run_irc_command(update, context, irc.cmd_meteo, query)
 
+
+@vip_required
 async def cmd_youtube(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = " ".join(context.args) if context.args else ""
     if not query:
@@ -182,6 +229,8 @@ async def cmd_youtube(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     await run_irc_command(update, context, irc.cmd_youtube, query)
 
+
+@vip_required
 async def cmd_google(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = " ".join(context.args) if context.args else ""
     if not query:
@@ -189,14 +238,20 @@ async def cmd_google(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     await run_irc_command(update, context, irc.cmd_google, query)
 
+
+@vip_required
 async def cmd_news(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = " ".join(context.args) if context.args else "portugal"
     await run_irc_command(update, context, irc.cmd_news, query)
 
+
+@vip_required
 async def cmd_crypto(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = " ".join(context.args) if context.args else "bitcoin"
     await run_irc_command(update, context, irc.cmd_crypto, query)
 
+
+@vip_required
 async def cmd_stock(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = " ".join(context.args) if context.args else ""
     if not query:
@@ -204,14 +259,20 @@ async def cmd_stock(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     await run_irc_command(update, context, irc.cmd_stock, query)
 
+
+@vip_required
 async def cmd_cinema(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🎬 A buscar filmes em cartaz...")
     await run_irc_command(update, context, irc.cmd_cinema)
 
+
+@vip_required
 async def cmd_estreias(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🎬 A buscar estreias...")
     await run_irc_command(update, context, irc.cmd_estreias)
 
+
+@vip_required
 async def cmd_imdb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = " ".join(context.args) if context.args else ""
     if not query:
@@ -220,6 +281,8 @@ async def cmd_imdb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🎬 A pesquisar IMDB...")
     await run_irc_command(update, context, irc.cmd_imdb, query)
 
+
+@vip_required
 async def cmd_play(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Generate playimdb link from IMDB URL or ID."""
     query = " ".join(context.args) if context.args else ""
@@ -228,6 +291,8 @@ async def cmd_play(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     await run_irc_command(update, context, irc.cmd_play, query)
 
+
+@vip_required
 async def cmd_ipinfo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = " ".join(context.args) if context.args else ""
     if not query:
@@ -235,6 +300,8 @@ async def cmd_ipinfo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     await run_irc_command(update, context, irc.cmd_ipinfo, query)
 
+
+@vip_required
 async def cmd_ipscan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = " ".join(context.args) if context.args else ""
     if not query:
@@ -243,6 +310,8 @@ async def cmd_ipscan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🔍 A fazer scan de portas...")
     await run_irc_command(update, context, irc.cmd_ipscan, query)
 
+
+@vip_required
 async def cmd_iplookup(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = " ".join(context.args) if context.args else ""
     if not query:
@@ -250,23 +319,35 @@ async def cmd_iplookup(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     await run_irc_command(update, context, irc.cmd_iplookup, query)
 
+
+@vip_required
 async def cmd_quote(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await run_irc_command(update, context, irc.cmd_quote)
 
+
+@vip_required
 async def cmd_curiosidade(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await run_irc_command(update, context, irc.cmd_curiosity)
 
+
+@vip_required
 async def cmd_iptv(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await run_irc_command(update, context, irc.cmd_iptv)
 
+
+@vip_required
 async def cmd_piratebay(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = " ".join(context.args) if context.args else ""
     await run_irc_command(update, context, irc.cmd_piratebay, query)
 
+
+@vip_required
 async def cmd_predb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = " ".join(context.args) if context.args else ""
     await run_irc_command(update, context, irc.cmd_predb, query)
 
+
+@vip_required
 async def cmd_notice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     Usage: /notice [nick|#canal] [message]
@@ -308,6 +389,161 @@ async def cmd_notice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await update.message.reply_text(f"📢 Notice (quote) enviado para {target}")
 
+async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Verificar status VIP do utilizador."""
+    user_id = update.effective_user.id
+    username = update.effective_user.username or update.effective_user.first_name or "?"
+    
+    if user_id == OWNER_ID:
+        await update.message.reply_text("👑 **ADMIN** — Acesso total (Owner)")
+        return
+    
+    status = check_vip(user_id)
+    if status.get("active"):
+        expires = status["expires"]
+        await update.message.reply_text(
+            f"🟢 **Status: VIP Ativo**\n\n"
+            f"📋 Plano: {status.get('plan', 'VIP')}\n"
+            f"📅 Expira: {expires.strftime('%d/%m/%Y')} às {expires.strftime('%H:%M')}\n"
+            f"⏳ Dias restantes: {status.get('days_left', '?')}"
+        )
+    else:
+        if status.get("expired"):
+            await update.message.reply_text(
+                "🔴 **Status: VIP Expirado**\n\n"
+                "A tua assinatura expirou.\n"
+                "Usa `/ativar <codigo>` para renovar com um novo código."
+            )
+        else:
+            await update.message.reply_text(
+                "⚪ **Status: Sem Assinatura**\n\n"
+                "Não tens uma assinatura VIP.\n"
+                "Usa `/ativar <codigo>` se tiveres um código."
+            )
+
+
+async def cmd_gerar(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    [ADMIN] Gerar um código VIP.
+    Uso: /gerar [VIP|premium] [dias]
+    Padrão: VIP 30 dias.
+    Somente o owner pode gerar códigos.
+    """
+    user_id = update.effective_user.id
+    
+    # Verificar se é o owner
+    if user_id != OWNER_ID:
+        await update.message.reply_text("❌ Apenas o admin pode gerar códigos.")
+        return
+    
+    args = context.args if context.args else []
+    plan = "VIP"
+    days = 30
+    
+    if args:
+        first = args[0].upper()
+        if first in ("VIP", "PREMIUM", "TRIAL"):
+            plan = first
+            args = args[1:]
+        # Check if first arg is a number (days)
+        if args and args[0].isdigit():
+            days = int(args[0])
+            args = args[1:]
+        elif not plan and first.isdigit():
+            days = int(first)
+    
+    code = generate_code(plan=plan, duration_days=days)
+    await update.message.reply_text(
+        f"✅ **Código Gerado!**\n\n"
+        f"🎫 Código: `{code}`\n"
+        f"📋 Plano: {plan}\n"
+        f"📅 Duração: {days} dias\n\n"
+        f"Para ativar: `/ativar {code}`",
+        parse_mode="Markdown",
+    )
+
+
+async def cmd_ativar(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Ativar um código VIP.
+    Uso: /ativar <codigo>
+    """
+    args = context.args if context.args else []
+    if not args:
+        await update.message.reply_text(
+            "⚠️ Uso: `/ativar <codigo>`\nEx: `/ativar VIP-O3KM-409M`",
+            parse_mode="Markdown",
+        )
+        return
+    
+    code = args[0].strip().upper()
+    user_id = update.effective_user.id
+    username = update.effective_user.username or update.effective_user.first_name or "?"
+    
+    result = activate_code(code, user_id, username)
+    await update.message.reply_text(result["message"])
+
+
+async def cmd_revoke(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """[ADMIN] Revogar VIP de um utilizador. Uso: /revoke <user_id>"""
+    user_id = update.effective_user.id
+    if user_id != OWNER_ID:
+        await update.message.reply_text("❌ Apenas o admin pode revogar VIP.")
+        return
+    
+    args = context.args if context.args else []
+    if not args:
+        await update.message.reply_text("⚠️ Uso: `/revoke <user_id>`")
+        return
+    
+    target_id = int(args[0])
+    if revoke_vip(target_id):
+        await update.message.reply_text(f"✅ VIP revogado do utilizador {target_id}.")
+    else:
+        await update.message.reply_text(f"❌ Utilizador {target_id} não encontrado.")
+
+
+async def cmd_vips(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """[ADMIN] Listar utilizadores VIP ativos."""
+    user_id = update.effective_user.id
+    if user_id != OWNER_ID:
+        await update.message.reply_text("❌ Apenas o admin.")
+        return
+    
+    users = list_active_users()
+    if not users:
+        await update.message.reply_text("📋 Nenhum VIP ativo.")
+        return
+    
+    lines = ["🟢 **VIPs Ativos:**\n"]
+    for u in users:
+        lines.append(
+            f"👤 `{u['user_id']}` — @{u['username']} | "
+            f"{u['plan']} | {u['expiry']} ({u['days_left']}d)"
+        )
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+
+async def cmd_codes(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """[ADMIN] Listar todos os códigos gerados."""
+    user_id = update.effective_user.id
+    if user_id != OWNER_ID:
+        await update.message.reply_text("❌ Apenas o admin.")
+        return
+    
+    codes = list_codes()
+    if not codes:
+        await update.message.reply_text("📋 Nenhum código gerado.")
+        return
+    
+    lines = ["🎫 **Códigos Gerados:**\n"]
+    for c in codes:
+        status = "🟢 Usado" if c["active"] else "⚪ Livre"
+        used = f" (por {c['used_by']})" if c.get("used_by") else ""
+        lines.append(f"`{c['code']}` — {c['plan']} {c['duration']}d — {status}{used}")
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+
 async def cmd_ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Test if bot is alive."""
     await update.message.reply_text("🦉 Pong! Bot está vivo.")
@@ -327,6 +563,12 @@ def main():
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(CommandHandler("ping", cmd_ping))
+    app.add_handler(CommandHandler("status", cmd_status))
+    app.add_handler(CommandHandler("ativar", cmd_ativar))
+    app.add_handler(CommandHandler("gerar", cmd_gerar))
+    app.add_handler(CommandHandler("revoke", cmd_revoke))
+    app.add_handler(CommandHandler("vips", cmd_vips))
+    app.add_handler(CommandHandler("codes", cmd_codes))
     app.add_handler(CommandHandler("wiki", cmd_wiki))
     app.add_handler(CommandHandler("img", cmd_img))
     app.add_handler(CommandHandler("meteo", cmd_meteo))
