@@ -1100,51 +1100,41 @@ def cmd_stock(symbol):
 # === CINEMA & IMDB ===
 
 def cmd_cinema():
-    """Get all now playing movies from CineCartaz Público (titles in PT)"""
-    import concurrent.futures
-    
+    """Get 'Em cartaz' movies from CineCartaz Público - 25 filmes em destaque no cartaz"""
     base_url = "https://cinecartaz.publico.pt"
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
     
     try:
-        # Step 1: Fetch main page to get all /filme/ links
         req = urllib.request.Request(base_url + "/", headers=headers)
         with urllib.request.urlopen(req, timeout=10) as r:
             html = r.read().decode("utf-8", errors="replace")
         
-        filme_links = list(dict.fromkeys(re.findall(r'href="(/filme/[^"?]+)', html)))
+        # Encontrar a secção "Em cartaz"
+        cartaz_pos = html.find("Em cartaz")
+        if cartaz_pos < 0:
+            return ["🎬 Secção 'Em cartaz' não encontrada. Consulta https://cinecartaz.publico.pt/"]
         
-        if not filme_links:
-            return ["🎬 Sem resultados. Consulta https://cinecartaz.publico.pt/"]
+        # Recuar até ao <section> mais próximo (início da secção)
+        section_start = html.rfind("<section", 0, cartaz_pos)
+        if section_start < 0:
+            section_start = cartaz_pos
         
-        # Step 2: Fetch each filme page in parallel to get og:title
-        def get_title(link):
-            try:
-                req2 = urllib.request.Request(base_url + link, headers=headers)
-                with urllib.request.urlopen(req2, timeout=8) as r:
-                    page = r.read().decode("utf-8", errors="replace")
-                og = re.search(r'property="og:title"[^>]*content="([^"]+)"', page)
-                if og:
-                    return og.group(1).strip()
-                tm = re.search(r'<title>([^<]+)</title>', page)
-                if tm:
-                    return tm.group(1).strip()
-            except:
-                pass
-            return None
+        # Avançar até à próxima <section> (fim da secção)
+        next_section = html.find("<section", cartaz_pos + 100)
+        if next_section < 0:
+            next_section = section_start + 20000
         
-        titles = []
-        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as ex:
-            futures = [ex.submit(get_title, link) for link in filme_links]
-            for f in concurrent.futures.as_completed(futures):
-                t = f.result()
-                if t:
-                    titles.append(t)
+        chunk = html[section_start:next_section]
+        
+        # Extrair títulos da secção Em cartaz
+        titles = re.findall(r'<div class="collection__item-title">([^<]+)</div>', chunk)
         
         if titles:
-            results = [f"🎬 Nos Cinemas em Portugal ({len(titles)} filmes):"]
+            # Limitar a 25 (os primeiros 25 são os em destaque no cartaz)
+            titles = titles[:25]
+            results = [f"🎬 Em Cartaz nos Cinemas ({len(titles)} filmes):"]
             for i, t in enumerate(titles, 1):
-                results.append(f"  {i}. {t}")
+                results.append(f"  {i}. {t.strip()}")
             return results
     except Exception as e:
         pass
