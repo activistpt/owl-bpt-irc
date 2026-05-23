@@ -1100,41 +1100,56 @@ def cmd_stock(symbol):
 # === CINEMA & IMDB ===
 
 def cmd_cinema():
-    """Get now playing movies from CineCartaz Público"""
+    """Get all now playing movies from CineCartaz Público (titles in PT)"""
+    import concurrent.futures
+    
+    base_url = "https://cinecartaz.publico.pt"
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+    
     try:
-        url = "https://cinecartaz.publico.pt/"
-        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        # Step 1: Fetch main page to get all /filme/ links
+        req = urllib.request.Request(base_url + "/", headers=headers)
         with urllib.request.urlopen(req, timeout=10) as r:
             html = r.read().decode("utf-8", errors="replace")
         
-        # Extrair títulos de filmes do HTML
-        all_classes = re.findall(r'<[^>]+class="([^"]*)"[^>]*>([^<]+)</[^>]+>', html)
-        movie_titles = []
-        for cls, text in all_classes:
-            if 'title' in cls.lower() or 'movie' in cls.lower():
-                t = text.strip()
-                if len(t) > 2 and len(t) < 80:
-                    movie_titles.append(t)
+        filme_links = list(dict.fromkeys(re.findall(r'href="(/filme/[^"?]+)', html)))
         
-        # Remover duplicados e irrelevantes
-        skip = ['Estreias da semana', 'Filmes', 'Cinecartaz', 'Público', 'Menu', 'Login']
-        seen = set()
-        unique = []
-        for t in movie_titles:
-            if t not in seen and t not in skip:
-                seen.add(t)
-                unique.append(t)
+        if not filme_links:
+            return ["🎬 Sem resultados. Consulta https://cinecartaz.publico.pt/"]
         
-        if unique:
-            results = ["🎬 Nos Cinemas em Portugal:"]
-            for t in unique[:15]:
-                results.append(f"  🎬 {t}")
+        # Step 2: Fetch each filme page in parallel to get og:title
+        def get_title(link):
+            try:
+                req2 = urllib.request.Request(base_url + link, headers=headers)
+                with urllib.request.urlopen(req2, timeout=8) as r:
+                    page = r.read().decode("utf-8", errors="replace")
+                og = re.search(r'property="og:title"[^>]*content="([^"]+)"', page)
+                if og:
+                    return og.group(1).strip()
+                tm = re.search(r'<title>([^<]+)</title>', page)
+                if tm:
+                    return tm.group(1).strip()
+            except:
+                pass
+            return None
+        
+        titles = []
+        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as ex:
+            futures = [ex.submit(get_title, link) for link in filme_links]
+            for f in concurrent.futures.as_completed(futures):
+                t = f.result()
+                if t:
+                    titles.append(t)
+        
+        if titles:
+            results = [f"🎬 Nos Cinemas em Portugal ({len(titles)} filmes):"]
+            for i, t in enumerate(titles, 1):
+                results.append(f"  {i}. {t}")
             return results
     except Exception as e:
         pass
     
-    # Fallback
-    return ["🎬 Nos Cinemas: consulta https://cinecartaz.publico.pt/"]
+    return ["🎬 Erro. Consulta https://cinecartaz.publico.pt/"]
 
 def cmd_estreias():
     """Get upcoming movie releases from FilmSpot RSS + CineCartaz"""
