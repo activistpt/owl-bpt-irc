@@ -12,16 +12,18 @@ import re
 import logging
 import importlib.util
 from subscription_manager import check_vip, generate_code, activate_code, revoke_vip, list_codes, list_active_users
+from llm_chat import chat_with_llm
 
 # === CONFIG ===
 BOT_TOKEN = "8306294739:AAFyPp6Z3xspgrKG7lWx-mI4Hutx23o6DeI"
 OWNER_ID = 889219283  # RɆβɆŁŞØŁ ☠️ chat_id
 ALLOWED_CHAT_IDS = set()  # vazio = aceita todos os grupos
-# Para restringir a grupos específicos:
-# ALLOWED_CHAT_IDS = {-1003545367062}  # DEEP WEB group
 
 # === COMANDOS QUE NÃO PRECISAM DE VIP ===
-FREE_COMMANDS = {"start", "help", "ping", "gerar", "ativar"}
+FREE_COMMANDS = {"start", "help", "ping", "gerar", "ativar", "status"}
+
+# === COMANDOS VIP 90+ DIAS ===
+VIP90_COMMANDS = {"chat", "ask"}
 
 # === LOGGING ===
 logging.basicConfig(
@@ -109,6 +111,38 @@ def vip_required(func):
         return await func(update, context)
     return wrapper
 
+
+def vip_90d_required(func):
+    """Decorator que verifica se o utilizador tem VIP ativo com 90+ dias restantes."""
+    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        user_id = update.effective_user.id
+        if user_id == OWNER_ID:
+            return await func(update, context)
+
+        status = check_vip(user_id)
+        if not status.get("active"):
+            await update.message.reply_text(
+                "🔒 **Comando VIP 90d**\n\n"
+                "Este comando requer uma assinatura VIP ativa.\n"
+                "Usa `/ativar <codigo>` para ativar.",
+                parse_mode="Markdown",
+            )
+            return
+
+        days_left = status.get("days_left", 0)
+        if days_left < 90:
+            await update.message.reply_text(
+                f"🔒 **Comando VIP 90d**\n\n"
+                f"Este comando precisa de **90+ dias VIP** restantes.\n"
+                f"Tens apenas **{days_left} dias** restantes.\n"
+                f"Renova o VIP para teres acesso.",
+                parse_mode="Markdown",
+            )
+            return
+
+        return await func(update, context)
+    return wrapper
+
 # === COMMAND HANDLERS ===
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -147,6 +181,10 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         " `/quote` - Citação aleatória\n"
         " `/curiosidade` - Curiosidade\n"
         " `/notice [nick] [msg]` - Enviar notice\n\n"
+        "🧠 **AI Chat (VIP 90d+):**\n"
+        " `/ask <pergunta>` - Perguntar ao OWL\n"
+        " `/chat <mensagem>` - Chat com pesquisa web\n"
+        " `DM direto ao bot` - Conversa livre\n\n"
         "🔑 **Admin:**\n"
         " `/gerar [VIP|premium] [dias]` - Gerar código\n"
         " `/revoke <user_id>` - Revogar VIP\n"
@@ -389,6 +427,140 @@ async def cmd_notice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await update.message.reply_text(f"📢 Notice (quote) enviado para {target}")
 
+@vip_90d_required
+async def cmd_ask(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    [VIP 90+] Pergunta ao OWL com pesquisa web.
+    Uso: /ask <pergunta>
+    """
+    query = " ".join(context.args) if context.args else ""
+    if not query:
+        await update.message.reply_text(
+            "⚠️ Uso: `/ask <pergunta>`\nEx: `/ask Qual a previsão do tempo para amanhã?`",
+            parse_mode="Markdown",
+        )
+        return
+
+    # Show typing
+    await update.message.reply_text("🦉 A pensar...")
+
+    # Run in executor to not block
+    import asyncio
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(None, lambda: chat_with_llm(query, use_search=True))
+
+    if result["error"]:
+        await update.message.reply_text(f"❌ Erro: {result['error'][:200]}")
+        return
+
+    # Send response (split if too long)
+    response = result["response"]
+    if len(response) > 4000:
+        # Split into chunks
+        for i in range(0, len(response), 4000):
+            await update.message.reply_text(response[i:i+4000])
+    else:
+        await update.message.reply_text(response)
+
+
+@vip_90d_required
+async def cmd_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    [VIP 90+] Chat livre com o OWL (com pesquisa).
+    Funciona como /ask mas em modo conversacional.
+    Uso: /chat <mensagem>
+    Também responde a mensagens diretas (DM).
+    """
+    query = " ".join(context.args) if context.args else ""
+    if not query:
+        await update.message.reply_text(
+            "⚠️ Uso: `/chat <mensagem>`\nEx: `/chat Explique-me como funciona a energia solar`\n\n"
+            "Também podes enviar mensagens diretamente ao bot em DM!",
+            parse_mode="Markdown",
+        )
+        return
+
+    await update.message.reply_text("🦉 A pensar...")
+
+    import asyncio
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(None, lambda: chat_with_llm(query, use_search=True))
+
+    if result["error"]:
+        await update.message.reply_text(f"❌ Erro: {result['error'][:200]}")
+        return
+
+    response = result["response"]
+    if len(response) > 4000:
+        for i in range(0, len(response), 4000):
+            await update.message.reply_text(response[i:i+4000])
+    else:
+        await update.message.reply_text(response)
+
+
+async def handle_direct_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Handler para mensagens diretas (DM) ao bot.
+    Se o user tem VIP 90+, responde com o LLM.
+    """
+    # Only handle private messages (DM)
+    if update.effective_chat.type != "private":
+        return
+
+    user_id = update.effective_user.id
+    if user_id == OWNER_ID:
+        pass  # Owner always
+    else:
+        status = check_vip(user_id)
+        if not status.get("active") or status.get("days_left", 0) < 90:
+            await update.message.reply_text(
+                "🔒 **Chat VIP 90d**\n\n"
+                "Para falar comigo em DM, precisas de VIP com 90+ dias.\n"
+                "Usa `/ativar <codigo>` para ativar.",
+                parse_mode="Markdown",
+            )
+            return
+
+    query = update.message.text.strip()
+    if not query:
+        return
+
+    # Ignore commands
+    if query.startswith("/"):
+        return
+
+    await update.message.reply_text("🦉 A pensar...")
+
+    import asyncio
+    loop = asyncio.get_event_loop()
+
+    # Get conversation history from user_data
+    user_data = context.user_data
+    history = user_data.get("chat_history", [])
+
+    result = await loop.run_in_executor(
+        None,
+        lambda: chat_with_llm(query, conversation_history=history, use_search=True)
+    )
+
+    if result["error"]:
+        await update.message.reply_text(f"❌ Erro: {result['error'][:200]}")
+        return
+
+    # Save conversation history
+    history.append({"role": "user", "content": query})
+    history.append({"role": "assistant", "content": result["response"]})
+    # Keep last 20 messages
+    user_data["chat_history"] = history[-20:]
+
+    response = result["response"]
+    if len(response) > 4000:
+        for i in range(0, len(response), 4000):
+            await update.message.reply_text(response[i:i+4000])
+    else:
+        await update.message.reply_text(response)
+
+
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Verificar status VIP do utilizador."""
     user_id = update.effective_user.id
@@ -591,10 +763,15 @@ def main():
     app.add_handler(CommandHandler("piratebay", cmd_piratebay))
     app.add_handler(CommandHandler("predb", cmd_predb))
     app.add_handler(CommandHandler("notice", cmd_notice))
-    
+    app.add_handler(CommandHandler("ask", cmd_ask))
+    app.add_handler(CommandHandler("chat", cmd_chat))
+
     # Catch-all for unknown commands
     app.add_handler(MessageHandler(filters.COMMAND, unknown_command))
-    
+
+    # Handle direct messages (DM) — must be last
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, handle_direct_message))
+
     log.info("Bot running. Press Ctrl+C to stop.")
     app.run_polling(drop_pending_updates=True)
 
