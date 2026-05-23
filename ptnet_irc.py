@@ -168,6 +168,7 @@ class PTnetIRC:
             return None
 
     def handle_line(self, line):
+        global IRC_NICK
         line = line.strip()
         if not line:
             return
@@ -250,41 +251,46 @@ class PTnetIRC:
             sender_nick = None
 
         if sender_nick:
-            upper_line = line.upper()
-            if " JOIN " in upper_line or line.count("JOIN") >= 1 and "!" in line:
-                # :nick!user@host JOIN :#channel
-                ch = line.split("JOIN")[1].strip().lstrip(":")
-                if ch.startswith("#"):
-                    if ch not in self.channel_members:
-                        self.channel_members[ch] = set()
-                    self.channel_members[ch].add(sender_nick)
-                    log(f"JOIN: {sender_nick} -> {ch}")
-            elif " PART " in upper_line and "!" in line:
-                # :nick!user@host PART #channel :reason
-                ch = line.split("PART")[1].split(":")[0].strip()
-                if ch in self.channel_members:
-                    self.channel_members[ch].discard(sender_nick)
-                    log(f"PART: {sender_nick} <- {ch}")
-            elif " QUIT " in upper_line and "!" in line:
-                for ch in self.channel_members:
-                    self.channel_members[ch].discard(sender_nick)
-                log(f"QUIT: {sender_nick}")
-            elif " KICK " in upper_line and "!" in line:
-                parts_q = line.split()
-                if len(parts_q) >= 4:
-                    ch = parts_q[2]
-                    kicked = parts_q[3]
-                    if ch in self.channel_members:
-                        self.channel_members[ch].discard(kicked)
-                        log(f"KICK: {kicked} <- {ch}")
-            elif " NICK " in upper_line and "!" in line:
-                # :oldnick!user@host NICK :newnick
-                new_nick = line.split("NICK")[1].strip().lstrip(":")
-                for ch in self.channel_members:
-                    if sender_nick in self.channel_members[ch]:
+            try:
+                upper_line = line.upper()
+                if " JOIN " in upper_line and "!" in line:
+                    # :nick!user@host JOIN :#channel
+                    ch = line.split("JOIN")[1].strip().lstrip(":")
+                    if ch.startswith("#"):
+                        if ch not in self.channel_members:
+                            self.channel_members[ch] = set()
+                        self.channel_members[ch].add(sender_nick)
+                        log(f"JOIN: {sender_nick} -> {ch}")
+                elif " PART " in upper_line and "!" in line:
+                    # :nick!user@host PART #channel :reason
+                    parts = line.split("PART", 1)
+                    if len(parts) > 1:
+                        ch = parts[1].split(":")[0].strip()
+                        if ch in self.channel_members:
+                            self.channel_members[ch].discard(sender_nick)
+                            log(f"PART: {sender_nick} <- {ch}")
+                elif " QUIT " in upper_line and "!" in line:
+                    for ch in self.channel_members:
                         self.channel_members[ch].discard(sender_nick)
-                        self.channel_members[ch].add(new_nick)
-                        log(f"NICK: {sender_nick} -> {new_nick} in {ch}")
+                    log(f"QUIT: {sender_nick}")
+                elif " KICK " in upper_line and "!" in line:
+                    parts_q = line.split()
+                    if len(parts_q) >= 4:
+                        ch = parts_q[2]
+                        kicked = parts_q[3]
+                        if ch in self.channel_members:
+                            self.channel_members[ch].discard(kicked)
+                            log(f"KICK: {kicked} <- {ch}")
+                elif " NICK " in upper_line and "!" in line:
+                    # :oldnick!user@host NICK :newnick
+                    new_nick = line.split("NICK", 1)[1].strip().lstrip(":")
+                    for ch in self.channel_members:
+                        if sender_nick in self.channel_members[ch]:
+                            self.channel_members[ch].discard(sender_nick)
+                            self.channel_members[ch].add(new_nick)
+                            log(f"NICK: {sender_nick} -> {new_nick} in {ch}")
+            except Exception as e:
+                log(f"Member tracking error: {e}")
 
         msg = self.parse_message(line)
         if msg and msg["sender"] != IRC_NICK:
