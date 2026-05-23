@@ -1431,8 +1431,8 @@ def cmd_notice(sender, channel, target_nick=None):
         # Announce in main channel
         responses.append({"target": "#deep-web", "message": "🦉 Notice enviado para %s por %s" % (target_nick, sender), "type": "privmsg"})
     else:
-        # Send to channel as PRIVMSG (NOTICE requires op on PTnet)
-        responses.append({"target": channel, "message": quote, "type": "privmsg"})
+        # Send NOTICE to all channel members individually
+        responses.append({"target": channel, "message": quote, "type": "notice_all", "exclude": list(IGNORE_NICKS | {sender, "OWL"})})
     
     return responses
 
