@@ -53,6 +53,7 @@ class PTnetIRC:
         self.buffer = ""
         self.processed_ids = set()
         self.channel_members = {}  # { "#channel": set(nick1, nick2, ...) }
+        self.needs_names = set()  # channels that need NAMES refresh
         # Lock file to prevent multiple instances
         self.lock_file = os.path.join(QUEUE_DIR, ".irc_lock")
 
@@ -125,6 +126,12 @@ class PTnetIRC:
     def join_channel(self, channel):
         self.send_raw(f"JOIN {channel}")
 
+    def request_names(self, channel):
+        """Request NAMES list for a channel to refresh member cache"""
+        self.needs_names.add(channel)
+        self.send_raw(f"NAMES {channel}")
+        log(f"NAMES requested for {channel}")
+
     def handle_ping(self, line):
         if line.startswith("PING"):
             pong_arg = line.split(" ", 1)[1] if " " in line else ""
@@ -186,7 +193,11 @@ class PTnetIRC:
                     channel = parts[3] if len(parts) > 3 else "?"
                     self.joined_channels.add(channel)
                     log(f"Joined {channel}")
-                    # Don't announce on join to be stealthy
+                    # Ensure channel is in members cache
+                    if channel not in self.channel_members:
+                        self.channel_members[channel] = set()
+                    # Add ourselves
+                    self.channel_members[channel].add(IRC_NICK)
 
                 elif code == "353":
                     # RPL_NAMREPLY — list of channel members
@@ -203,9 +214,11 @@ class PTnetIRC:
                             self.channel_members[channel] = set()
                         self.channel_members[channel].update(nicks)
                         log(f"NAMES {channel}: {len(nicks)} nicks")
+                        # If we requested NAMES for this channel, also send to main channels
+                        if channel in self.needs_names:
+                            self.needs_names.discard(channel)
 
                 elif code == "433":
-                    global IRC_NICK
                     IRC_NICK = IRC_NICK.rstrip("_") + "_"
                     self.send_raw(f"NICK {IRC_NICK}")
                     log(f"Nick taken, trying {IRC_NICK}")
@@ -225,36 +238,53 @@ class PTnetIRC:
                     self.send_raw(f"NOTICE {msg['sender']} :\x01VERSION OWL Bot - Python IRC\x01")
                 return
 
-        # PRIVMSG
-        # Track JOIN/PART/QUIT for member cache
-        if " :" in line:
-            try:
-                sender_full = line.split("!")[0].lstrip(":")
-                sender_nick = sender_full.split("!")[0]
-                if "JOIN" in line and "!" in line:
-                    ch = line.split("JOIN")[1].strip().lstrip(":")
+        # Track JOIN/PART/QUIT/NICK for member cache
+        # Parse nick from :nick!user@host format
+        try:
+            if "!" in line and line.startswith(":"):
+                sender_full = line.split(" ")[0]  # :nick!user@host
+                sender_nick = sender_full.split("!")[0].lstrip(":")
+            else:
+                sender_nick = None
+        except:
+            sender_nick = None
+
+        if sender_nick:
+            upper_line = line.upper()
+            if " JOIN " in upper_line or line.count("JOIN") >= 1 and "!" in line:
+                # :nick!user@host JOIN :#channel
+                ch = line.split("JOIN")[1].strip().lstrip(":")
+                if ch.startswith("#"):
+                    if ch not in self.channel_members:
+                        self.channel_members[ch] = set()
+                    self.channel_members[ch].add(sender_nick)
+                    log(f"JOIN: {sender_nick} -> {ch}")
+            elif " PART " in upper_line and "!" in line:
+                # :nick!user@host PART #channel :reason
+                ch = line.split("PART")[1].split(":")[0].strip()
+                if ch in self.channel_members:
+                    self.channel_members[ch].discard(sender_nick)
+                    log(f"PART: {sender_nick} <- {ch}")
+            elif " QUIT " in upper_line and "!" in line:
+                for ch in self.channel_members:
+                    self.channel_members[ch].discard(sender_nick)
+                log(f"QUIT: {sender_nick}")
+            elif " KICK " in upper_line and "!" in line:
+                parts_q = line.split()
+                if len(parts_q) >= 4:
+                    ch = parts_q[2]
+                    kicked = parts_q[3]
                     if ch in self.channel_members:
-                        self.channel_members[ch].add(sender_nick)
-                        log(f"JOIN: {sender_nick} -> {ch}")
-                elif "PART" in line and "!" in line:
-                    ch = line.split("PART")[1].split(":")[0].strip()
-                    if ch in self.channel_members:
+                        self.channel_members[ch].discard(kicked)
+                        log(f"KICK: {kicked} <- {ch}")
+            elif " NICK " in upper_line and "!" in line:
+                # :oldnick!user@host NICK :newnick
+                new_nick = line.split("NICK")[1].strip().lstrip(":")
+                for ch in self.channel_members:
+                    if sender_nick in self.channel_members[ch]:
                         self.channel_members[ch].discard(sender_nick)
-                        log(f"PART: {sender_nick} <- {ch}")
-                elif "QUIT" in line and "!" in line:
-                    for ch in self.channel_members:
-                        self.channel_members[ch].discard(sender_nick)
-                    log(f"QUIT: {sender_nick}")
-                elif "KICK" in line and "!" in line:
-                    parts_q = line.split()
-                    if len(parts_q) >= 4:
-                        ch = parts_q[2]
-                        kicked = parts_q[3]
-                        if ch in self.channel_members:
-                            self.channel_members[ch].discard(kicked)
-                            log(f"KICK: {kicked} <- {ch}")
-            except:
-                pass
+                        self.channel_members[ch].add(new_nick)
+                        log(f"NICK: {sender_nick} -> {new_nick} in {ch}")
 
         msg = self.parse_message(line)
         if msg and msg["sender"] != IRC_NICK:
@@ -298,20 +328,22 @@ class PTnetIRC:
                             # Send NOTICE to all channel members from cache
                             channel = target
                             exclude = set(data.get("exclude", []))
-                            members = self.channel_members.get(channel, set())
                             exclude.add(IRC_NICK)
-                            sent = 0
-                            for nick in members:
-                                if nick not in exclude:
-                                    self.send_notice(nick, message)
-                                    sent += 1
-                            log("NOTICE ALL -> %s: %d nicks (%s...)" % (channel, sent, message[:30]))
-                            if sent == 0:
-                                # Cache empty: re-queue for next iteration after NAMES arrives
-                                self.send_raw("NAMES %s" % channel)
-                                log("NAMES requested for %s (cache empty)" % channel)
-                                # Re-append to outgoing so it retries next tick
-                                retry = {"target": channel, "message": message, "type": "notice_all", "exclude": data.get("exclude", [])}
+                            members = self.channel_members.get(channel, set()).copy()
+                            
+                            if members:
+                                sent = 0
+                                for nick in members:
+                                    if nick not in exclude:
+                                        self.send_notice(nick, message)
+                                        sent += 1
+                                log(f"NOTICE ALL -> {channel}: {sent} nicks ({message[:30]}...)")
+                            else:
+                                # Cache empty: request NAMES and retry next tick
+                                log(f"NOTICE ALL -> {channel}: cache empty, requesting NAMES")
+                                self.request_names(channel)
+                                # Re-append to outgoing so it retries after NAMES arrives
+                                retry = {"target": channel, "message": message, "type": "notice_all", "exclude": list(exclude)}
                                 with open(OUTGOING_FILE, "a") as rf:
                                     rf.write(json.dumps(retry) + "\n")
                         else:
