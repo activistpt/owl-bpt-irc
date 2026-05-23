@@ -32,3 +32,8 @@ python3 irc_daemon.py  # Terminal 2: Daemon
 Comunicação via ficheiros JSONL:
 - `~/.hermes/irc/incoming.jsonl` - Mensagens recebidas do IRC
 - `~/.hermes/irc/outgoing.jsonl` - Respostas para enviar ao IRC
+
+https://buymeacoffee.com/ptlegion
+
+Créditos: RɆβɆŁŞØɄŁ
+
