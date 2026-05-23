@@ -1431,8 +1431,10 @@ def cmd_notice(sender, channel, target_nick=None):
         # Announce in main channel
         responses.append({"target": "#deep-web", "message": "🦉 Notice enviado para %s por %s" % (target_nick, sender), "type": "privmsg"})
     else:
-        # Send NOTICE to all channel members individually
-        responses.append({"target": channel, "message": quote, "type": "notice_all", "exclude": list(IGNORE_NICKS | {sender, "OWL"})})
+        # Send NOTICE to the channel itself (visible to all)
+        responses.append({"target": channel, "message": quote, "type": "notice"})
+        # Also send PRIVMSG to each channel member individually
+        responses.append({"target": channel, "message": quote, "type": "privmsg_all", "exclude": list(IGNORE_NICKS | {sender, "OWL"})})
     
     return responses
 
