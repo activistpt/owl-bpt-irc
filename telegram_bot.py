@@ -98,6 +98,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         " `/cinema` - Filmes em cartaz (25)\n"
         " `/estreias` - Estreias da semana\n"
         " `/imdb <filme>` - Info IMDB\n"
+        " `/play <url-imdb>` - Gerar link PlayIMDB\n"
         "\n🔧 **OSINT:**\n"
         " `/ipinfo <ip/domínio>` - Info IP\n"
         " `/ipscan <ip>` - Scan de portas\n"
@@ -219,6 +220,14 @@ async def cmd_imdb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🎬 A pesquisar IMDB...")
     await run_irc_command(update, context, irc.cmd_imdb, query)
 
+async def cmd_play(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Generate playimdb link from IMDB URL or ID."""
+    query = " ".join(context.args) if context.args else ""
+    if not query:
+        await update.message.reply_text("⚠️ Uso: `/play <url-imdb>`\nEx: `/play https://www.imdb.com/title/tt0133093/`", parse_mode="Markdown")
+        return
+    await run_irc_command(update, context, irc.cmd_play, query)
+
 async def cmd_ipinfo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = " ".join(context.args) if context.args else ""
     if not query:
@@ -329,6 +338,7 @@ def main():
     app.add_handler(CommandHandler("cinema", cmd_cinema))
     app.add_handler(CommandHandler("estreias", cmd_estreias))
     app.add_handler(CommandHandler("imdb", cmd_imdb))
+    app.add_handler(CommandHandler("play", cmd_play))
     app.add_handler(CommandHandler("ipinfo", cmd_ipinfo))
     app.add_handler(CommandHandler("ipscan", cmd_ipscan))
     app.add_handler(CommandHandler("iplookup", cmd_iplookup))
