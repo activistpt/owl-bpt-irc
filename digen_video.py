@@ -164,15 +164,48 @@ def submit_video(token, prompt, model="sora", duration=5, resolution="720p",
 
 
 def get_job_status(token, job_id):
-    """Check job status. Returns job data."""
+    """Check job status. Returns job data with video URL if complete."""
     headers = _make_headers(token)
 
-    # Try video_list (most reliable - shows all user videos)
+    # Primary: v3/video/job/list_by_job_id with job_id param (underscore!)
+    try:
+        result = _get(f"{DIGEN_API}/v3/video/job/list_by_job_id?job_id={job_id}", headers)
+        if result.get("errCode") == 0:
+            data = result.get("data", {})
+            video_url = data.get("videoUrl", "") or data.get("videoUrlV1", "")
+            status_code = data.get("status", 0)
+            # status: 2=processing, 3=completed, 4=failed
+            status_map = {2: "processing", 3: "completed", 4: "failed"}
+            return {
+                "status": status_map.get(status_code, "processing"),
+                "video_url": video_url,
+                "thumbnail": data.get("thumbnail", ""),
+                "source": "list_by_job_id",
+                "status_code": status_code,
+            }
+    except Exception:
+        pass
+
+    # Fallback: get_url
+    try:
+        result = _post(f"{DIGEN_API}/v1/tools/get_url",
+                       {"jobID": job_id}, headers)
+        if result.get("errCode") == 0 and result.get("data"):
+            data = result["data"]
+            if isinstance(data, dict):
+                url = data.get("direct_url", "") or data.get("url", "")
+            else:
+                url = str(data)
+            if url:
+                return {"status": "completed", "video_url": url, "source": "get_url"}
+    except Exception:
+        pass
+
+    # Fallback: video_list search
     try:
         result = _get(f"{DIGEN_API}/v1/community/video_list?page=1&pageSize=20", headers)
         if result.get("errCode") == 0:
-            videos = result.get("data", {}).get("list", [])
-            for v in videos:
+            for v in result.get("data", {}).get("list", []):
                 if v.get("jobID") == job_id:
                     video_url = v.get("videoURL", "")
                     return {
@@ -181,30 +214,6 @@ def get_job_status(token, job_id):
                         "thumbnail": v.get("thumbnail", ""),
                         "source": "video_list",
                     }
-    except Exception:
-        pass
-
-    # Try get_url
-    try:
-        result = _post(f"{DIGEN_API}/v1/tools/get_url",
-                       {"jobID": job_id}, headers)
-        if result.get("errCode") == 0 and result.get("data"):
-            return {"status": "completed", "video_url": result["data"], "source": "get_url"}
-    except Exception:
-        pass
-
-    # Try v3/video/get_task
-    try:
-        result = _get(f"{DIGEN_API}/v3/video/get_task?jobId={job_id}", headers)
-        if result.get("errCode") == 0:
-            data = result["data"]
-            video_url = data.get("videoUrl", "") or data.get("videoUrlV1", "")
-            return {
-                "status": "completed" if video_url else "processing",
-                "video_url": video_url,
-                "thumbnail": data.get("thumbnail", ""),
-                "source": "get_task",
-            }
     except Exception:
         pass
 
