@@ -13,6 +13,7 @@ import logging
 import importlib.util
 from subscription_manager import check_vip, generate_code, activate_code, revoke_vip, list_codes, list_active_users
 from llm_chat import chat_with_llm
+from digen_video import generate_video, get_credits, get_queue_status, login as digen_login
 
 # === CONFIG ===
 BOT_TOKEN = "8306294739:AAFyPp6Z3xspgrKG7lWx-mI4Hutx23o6DeI"
@@ -561,6 +562,91 @@ async def handle_direct_message(update: Update, context: ContextTypes.DEFAULT_TY
         await update.message.reply_text(response)
 
 
+
+@vip_required
+async def cmd_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Gerar vídeo com IA (Digen.ai). Uso: /video [modelo] <prompt>"""
+    args = context.args if context.args else []
+    if not args:
+        # Show usage + credits info
+        try:
+            from digen_video import _load_credentials, get_credits, get_queue_status, login as digen_login
+            email, password = _load_credentials()
+            if email:
+                auth = digen_login(email, password)
+                credits_val = get_credits(auth["token"])
+                queue_val = get_queue_status(auth["token"])
+            else:
+                credits_val = None
+                queue_val = None
+        except Exception:
+            credits_val = None
+            queue_val = None
+
+        text = (
+            "🎬 **Gerador de Vídeo IA (Digen.ai)**\n\n"
+            "Uso: `/video [modelo] <prompt>`\n\n"
+            "Modelos:\n"
+            "• `sora` — Sora 2 (30 créd) ⭐\n"
+            "• `veo` — VEO (20 créd)\n"
+            "• `grok` — Grok Video (25 créd)\n"
+            "• `seedream` — Seedream 5 (15 créd)\n"
+            "• `soramax` — Sora Max (50 créd)\n"
+        )
+        if credits_val is not None:
+            text += f"\n💰 Créditos: {credits_val}\n"
+        if queue_val:
+            text += f"⏳ Queue: {queue_val['total']} | ETA: {queue_val['estimated_time']}s\n"
+        text += "\nEx: `/video Um gato a voar sobre Lisboa`\n"
+        text += "Ex: `/video veo Um pôr do sol no Algarve`"
+        await update.message.reply_text(text, parse_mode="Markdown")
+        return
+
+    # Check if first arg is a model name
+    model = "sora"
+    model_map = {"sora": "sora", "sora2": "sora", "veo": "veo", "grok": "grok",
+                 "seedream": "seedream", "soramax": "soramax", "banana": "banana"}
+    if args[0].lower() in model_map:
+        model = model_map[args[0].lower()]
+        args = args[1:]
+
+    prompt = " ".join(args).strip()
+    if not prompt:
+        await update.message.reply_text("⚠️ Preciso de um prompt. Ex: `/video Um gato a voar`", parse_mode="Markdown")
+        return
+
+    await update.message.reply_text(
+        f"🎬 A gerar vídeo com **{model}**...\n"
+        f"Prompt: _{prompt}_\n"
+        f"⏳ Isto pode levar 1-3 minutos.",
+        parse_mode="Markdown"
+    )
+
+    try:
+        from digen_video import _load_credentials, generate_video as gen_vid
+        email, password = _load_credentials()
+        if not email:
+            await update.message.reply_text("❌ Credenciais Digen não configuradas.")
+            return
+
+        result = gen_vid(email, password, prompt, model=model, wait=True, timeout=300, poll_interval=15)
+        if result["status"] == "completed":
+            video_url = result["video_url"]
+            await update.message.reply_text(
+                f"✅ **Vídeo pronto!**\n\n🎬 {video_url}\n\n💰 Créditos: {result.get('credits_remaining', '?')}",
+                parse_mode="Markdown"
+            )
+        elif result["status"] == "timeout":
+            await update.message.reply_text("⏰ Timeout. Tenta novamente em breve.")
+        elif result["status"] == "error":
+            await update.message.reply_text(f"❌ Erro: {result.get('error', 'Desconhecido')}")
+        else:
+            await update.message.reply_text(f"❌ Falha. Estado: {result['status']}")
+    except Exception as e:
+        log.error(f"Video generation error: {e}")
+        await update.message.reply_text(f"❌ Erro: {str(e)[:200]}")
+
+
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Verificar status VIP do utilizador."""
     user_id = update.effective_user.id
@@ -765,6 +851,7 @@ def main():
     app.add_handler(CommandHandler("notice", cmd_notice))
     app.add_handler(CommandHandler("ask", cmd_ask))
     app.add_handler(CommandHandler("chat", cmd_chat))
+    app.add_handler(CommandHandler("video", cmd_video))
 
     # Catch-all for unknown commands
     app.add_handler(MessageHandler(filters.COMMAND, unknown_command))
